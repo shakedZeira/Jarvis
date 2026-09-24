@@ -1,0 +1,29 @@
+# Secrets
+.env
+*.cred
+credentials.json
+
+# Gradle / Android
+.gradle/
+build/
+*/build/
+local.properties
+*.properties
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / runtime
+*.log
+*.pid
+
+# Temp downloaded files
+*.apk
+*.aab

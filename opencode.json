@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "file:///C:/Users/IMOE001/Desktop/Shaked%20Projects/token%20minimizer/Token-minimizer/dist/index.js"
+  ]
+}
