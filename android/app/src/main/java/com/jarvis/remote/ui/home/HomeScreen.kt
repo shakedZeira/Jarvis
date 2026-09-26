@@ -1,6 +1,7 @@
 package com.jarvis.remote.ui.home
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -24,6 +26,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.jarvis.remote.data.model.Project
 import com.jarvis.remote.ui.theme.JarvisBlue
 import com.jarvis.remote.ui.theme.JarvisDanger
 import com.jarvis.remote.ui.theme.JarvisOrange
@@ -81,6 +85,18 @@ fun HomeContent(
             if (!state.connected) {
                 ConnectivityPill()
             }
+            ModeFilterRow(
+                activeOnly = state.showActiveOnly,
+                activeCount = state.activeCount,
+                onModeChange = viewModel::selectMode,
+            )
+            if (state.projects.isNotEmpty()) {
+                ProjectFilterRow(
+                    projects = state.projects,
+                    selectedProject = state.selectedProject,
+                    onSelect = viewModel::selectProject,
+                )
+            }
             val pullState = rememberPullToRefreshState()
             LaunchedEffect(state.loading) {
                 if (state.loading) pullState.startRefresh() else pullState.endRefresh()
@@ -106,6 +122,73 @@ fun HomeContent(
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun ModeFilterRow(
+    activeOnly: Boolean,
+    activeCount: Int,
+    onModeChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FilterChip(
+            selected = !activeOnly,
+            onClick = { onModeChange(false) },
+            label = { Text("All", style = MaterialTheme.typography.labelMedium) },
+        )
+        FilterChip(
+            selected = activeOnly,
+            onClick = { onModeChange(true) },
+            label = {
+                Text("Active ($activeCount)", style = MaterialTheme.typography.labelMedium)
+            },
+        )
+    }
+}
+
+@Composable
+private fun ProjectFilterRow(
+    projects: List<Project>,
+    selectedProject: String?,
+    onSelect: (String?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FilterChip(
+            selected = selectedProject == null,
+            onClick = { onSelect(null) },
+            label = { Text("All", style = MaterialTheme.typography.labelMedium) },
+        )
+        projects.forEach { project ->
+            FilterChip(
+                selected = selectedProject == project.worktree,
+                onClick = { onSelect(project.worktree) },
+                label = {
+                    Text(
+                        project.displayName(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                },
+            )
         }
     }
 }
@@ -246,8 +329,16 @@ private fun EmptyState(modifier: Modifier = Modifier) {
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                text = "No sessions yet — start one on the PC with `opencode attach`",
+                text = "No sessions from this server yet",
                 style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "An opencode server only reports sessions from the project folder it was started in. " +
+                    "Start one there with `opencode attach`, or connect to a different project's server.",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )

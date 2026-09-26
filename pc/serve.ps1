@@ -100,5 +100,5 @@ if ($TestOnly) {
     exit 0
 }
 
-Write-Log "Starting server: opencode serve --hostname 0.0.0.0 --port 4096 --mdns"
-& $opencode serve --hostname 0.0.0.0 --port 4096 --mdns
+Write-Log "Starting server: opencode serve --hostname $($ips[0]) --port 4096 --mdns"
+& $opencode serve --hostname $ips[0] --port 4096 --mdns

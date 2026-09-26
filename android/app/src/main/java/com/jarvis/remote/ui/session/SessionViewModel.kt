@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jarvis.remote.data.model.Message
 import com.jarvis.remote.data.model.OpenCodeEvent
+import com.jarvis.remote.data.repo.ApiException
 import com.jarvis.remote.data.repo.OpenCodeClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -41,6 +42,7 @@ class SessionViewModel(
         private const val MESSAGE_LIMIT = 200
         private const val RELOAD_DEBOUNCE_MS = 800L
         private const val SEND_RELOAD_DELAY_MS = 1_200L
+        private const val SEND_POLL_INTERVAL_MS = 1_500L
         private const val SEND_TIMEOUT_MS = 120_000L
         private const val STREAM_CAP = 50_000
     }
@@ -53,6 +55,7 @@ class SessionViewModel(
     private var streamingMessageId: String? = null
     private var optimisticCounter = 0
     private var sendGeneration = 0
+    private var pendingUserText: String? = null
 
     @Volatile
     var isBackgrounded = false
@@ -91,6 +94,9 @@ class SessionViewModel(
             ?.takeIf { it.info.finish == null }
             ?.let { TranscriptMapper.messageStreamingText(it.parts) }
 
+        val pendingUser = pendingUserText
+        val completed = pendingUser != null && hasCompletedAssistantAfter(messages, pendingUser)
+
         _uiState.update { state ->
             val items = if (initial || state.items.isEmpty()) {
                 serverItems
@@ -98,7 +104,7 @@ class SessionViewModel(
                 mergeRefresh(previous = state.items, server = serverItems)
             }
             val streaming = tailText
-                ?: if (state.sending && state.streamingText != null) state.streamingText else null
+                ?: if (state.sending && !completed && state.streamingText != null) state.streamingText else null
             state.copy(
                 title = TranscriptMapper.heading(firstAssistant?.info).takeIf { it.isNotBlank() } ?: state.title,
                 items = items,
@@ -106,9 +112,23 @@ class SessionViewModel(
                 running = TranscriptMapper.runningSignature(messages.lastOrNull()?.parts.orEmpty()),
                 error = null,
                 disconnected = false,
-            )
+                sending = if (completed) false else state.sending,
+                busy = if (completed) false else state.busy,
+            ).also {
+                if (completed) pendingUserText = null
+            }
         }
         streamingMessageId = if (tailText != null) lastAssistant?.info?.id else null
+    }
+
+    private fun hasCompletedAssistantAfter(messages: List<Message>, userText: String): Boolean {
+        val trimmed = userText.trim()
+        var userIndex = -1
+        messages.forEachIndexed { index, message ->
+            if (message.info.role == "user" && message.userText().trim() == trimmed) userIndex = index
+        }
+        if (userIndex < 0) return false
+        return messages.drop(userIndex + 1).any { it.info.role == "assistant" && it.info.finish != null }
     }
 
     private fun mergeRefresh(previous: List<TranscriptItem>, server: List<TranscriptItem>): List<TranscriptItem> {
@@ -125,6 +145,7 @@ class SessionViewModel(
 
         val generation = ++sendGeneration
         val optimisticKey = "opt-user-${optimisticCounter++}"
+        pendingUserText = trimmed
         _uiState.update {
             it.copy(
                 sending = true,
@@ -139,25 +160,42 @@ class SessionViewModel(
             )
         }
         viewModelScope.launch {
-            runCatching { client.sendPrompt(sessionID, trimmed) }
+            val sent = runCatching { client.sendPrompt(sessionID, trimmed) }
                 .onFailure { cause ->
                     _uiState.update {
                         it.copy(
-                            error = cause.message ?: "Couldn't send the prompt",
+                            error = sendErrorText(cause),
                             sending = false,
                             busy = false,
                         )
                     }
+                    pendingUserText = null
                 }
-            delay(SEND_RELOAD_DELAY_MS)
-            load(initial = false)
+                .isSuccess
+            if (sent) {
+                delay(SEND_RELOAD_DELAY_MS)
+                load(initial = false)
+                while (_uiState.value.sending) {
+                    delay(SEND_POLL_INTERVAL_MS)
+                    load(initial = false)
+                }
+            }
         }
         viewModelScope.launch {
             delay(SEND_TIMEOUT_MS)
             if (generation == sendGeneration && _uiState.value.sending) {
                 _uiState.update { it.copy(sending = false) }
+                pendingUserText = null
             }
         }
+    }
+
+    private fun sendErrorText(cause: Throwable): String {
+        val api = cause as? ApiException
+        if (api?.code == 400) {
+            return "Request rejected by server: ${api.detail ?: api.message}"
+        }
+        return api?.detail ?: cause.message ?: "Couldn't send the prompt"
     }
 
     fun abort() {

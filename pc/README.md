@@ -18,7 +18,7 @@ Starts a persistent, LAN/internet-accessible **opencode server** that the Androi
 Attach your terminals to the same server so every session lives in one place:
 
 ```powershell
-opencode attach http://localhost:4096
+.\pc\attach.ps1
 ```
 
 or point a new instance at it:
@@ -26,6 +26,18 @@ or point a new instance at it:
 ```powershell
 opencode --port 4096 --hostname 127.0.0.1
 ```
+
+### Live PC session
+
+Plain `opencode` opens its **own private session** that the phone can't see — phone messages won't show up on the PC screen until you exit and re-enter. To see phone messages update on the PC in real time, run `pc\attach.ps1` instead:
+
+```powershell
+.\pc\attach.ps1            # joins the shared server, continues in a running session
+.\pc\attach.ps1 -Continue  # continue the last session
+.\pc\attach.ps1 -Session <id>   # open a specific session by id
+```
+
+It reads the credentials from `pc\.env`, health-checks the server first (clear error if `serve.ps1` isn't running), and launches `opencode attach http://localhost:4096` against the same server the phone uses — any session created or continued there is shared with the app, so this TUI **is** the phone's session. TUI keystrokes stay in the terminal; the phone can keep messaging into it.
 
 ## 2. Open the firewall (one-time, admin)
 
@@ -45,6 +57,14 @@ Health check from any device:
 ```powershell
 curl -u opencode:<password> http://<pc-ip>:4096/global/health
 ```
+
+Skip manual entry — generate a QR code and scan it with the app:
+
+```powershell
+.\pc\pair.ps1
+```
+
+Prints the payload (and plain URL as fallback), writes `pc\pair.png`, and opens it for the phone to scan. Override the detected LAN IP with `.\pc\pair.ps1 -Host <ip|hostname>`.
 
 ## 4. Rules
 

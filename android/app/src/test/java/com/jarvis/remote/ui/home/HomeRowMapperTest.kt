@@ -139,4 +139,61 @@ class HomeRowMapperTest {
         assertEquals("2h ago", HomeRowMapper.formatRelative(now - 2 * 3_600_000L, now))
         assertEquals("—", HomeRowMapper.formatRelative(null, now))
     }
+
+    @Test
+    fun `activeRows keeps a busy row regardless of age`() {
+        val stale = now - HomeRowMapper.ACTIVE_WINDOW_MILLIS - 60_000L
+        val row = SessionRow(
+            id = "busy", title = "b", directory = null, agent = null,
+            status = RowStatus.RUNNING, busy = true, lastActivityMillis = stale,
+        )
+
+        assertEquals(listOf(row), HomeRowMapper.activeRows(listOf(row), now))
+    }
+
+    @Test
+    fun `activeRows keeps a RUNNING row regardless of age`() {
+        val stale = now - HomeRowMapper.ACTIVE_WINDOW_MILLIS - 60_000L
+        val row = SessionRow(
+            id = "running", title = "r", directory = null, agent = null,
+            status = RowStatus.RUNNING, busy = false, lastActivityMillis = stale,
+        )
+
+        assertEquals(listOf(row), HomeRowMapper.activeRows(listOf(row), now))
+    }
+
+    @Test
+    fun `activeRows keeps rows with recent activity`() {
+        val rows = listOf(
+            SessionRow(
+                id = "fresh", title = "f", directory = null, agent = null,
+                status = RowStatus.IDLE, busy = false, lastActivityMillis = now - 60_000L,
+            ),
+            SessionRow(
+                id = "boundary", title = "b", directory = null, agent = null,
+                status = RowStatus.IDLE, busy = false,
+                lastActivityMillis = now - HomeRowMapper.ACTIVE_WINDOW_MILLIS,
+            ),
+        )
+
+        assertEquals(
+            listOf("fresh", "boundary"),
+            HomeRowMapper.activeRows(rows, now).map { it.id },
+        )
+    }
+
+    @Test
+    fun `activeRows drops idle rows that aged out or have no activity`() {
+        val agedOut = SessionRow(
+            id = "old", title = "o", directory = null, agent = null,
+            status = RowStatus.IDLE, busy = false,
+            lastActivityMillis = now - HomeRowMapper.ACTIVE_WINDOW_MILLIS - 1L,
+        )
+        val unknown = SessionRow(
+            id = "none", title = "n", directory = null, agent = null,
+            status = RowStatus.UNKNOWN, busy = false, lastActivityMillis = null,
+        )
+
+        assertTrue(HomeRowMapper.activeRows(listOf(agedOut, unknown), now).isEmpty())
+    }
 }

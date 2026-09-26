@@ -1,7 +1,9 @@
 package com.jarvis.remote.ui.connect
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +54,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jarvis.remote.JarvisApplication
@@ -104,6 +108,25 @@ fun ConnectScreen(onConnected: (ConnectResult.Success) -> Unit) {
         }
     }
 
+    val launchCameraCapture: () -> Unit = {
+        qrError = null
+        try {
+            qrLauncher.launch(Intent(MediaStore.ACTION_IMAGE_CAPTURE))
+        } catch (e: Exception) {
+            qrError = "No camera available on this device."
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchCameraCapture()
+        } else {
+            qrError = "Camera permission is required to scan a QR code. You can grant it later in System settings."
+        }
+    }
+
     LaunchedEffect(state.connectedProfile) {
         state.connectedProfile?.let { onConnected(ConnectResult.Success(it)) }
     }
@@ -111,6 +134,7 @@ fun ConnectScreen(onConnected: (ConnectResult.Success) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -272,11 +296,14 @@ fun ConnectScreen(onConnected: (ConnectResult.Success) -> Unit) {
             Spacer(Modifier.size(10.dp))
             IconButton(
                 onClick = {
-                    qrError = null
-                    try {
-                        qrLauncher.launch(Intent(MediaStore.ACTION_IMAGE_CAPTURE))
-                    } catch (e: Exception) {
-                        qrError = "No camera available on this device."
+                    if (ContextCompat.checkSelfPermission(
+                            app,
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        launchCameraCapture()
+                    } else {
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     }
                 },
                 enabled = !state.busy

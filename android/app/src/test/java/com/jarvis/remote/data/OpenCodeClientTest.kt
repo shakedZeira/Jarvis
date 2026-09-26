@@ -4,6 +4,7 @@ import com.jarvis.remote.data.model.JarvisJson
 import com.jarvis.remote.data.repo.ApiException
 import com.jarvis.remote.data.repo.OpenCodeClient
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
@@ -73,6 +74,33 @@ class OpenCodeClientTest {
     }
 
     @Test
+    fun `sessions with directory filter url-encodes path and sends limit`() = runBlocking {
+        enqueueJson(200, SAMPLE_SESSION)
+        val sessions = client.sessions(directory = "D:\\AI Projects\\UltraDrive", limit = 50)
+        assertEquals(1, sessions.size)
+
+        val recorded = server.takeRequest()
+        assertEquals(
+            "/session?directory=D%3A%5CAI+Projects%5CUltraDrive&limit=50",
+            recorded.path,
+        )
+    }
+
+    @Test
+    fun `projects round trip maps worktree and time`() = runBlocking {
+        enqueueJson(200, SAMPLE_PROJECTS)
+        val projects = client.projects()
+        assertEquals(2, projects.size)
+        val first = projects.first()
+        assertEquals("proj_1", first.id)
+        assertEquals("D:\\AI Projects\\Jarvis", first.worktree)
+        assertEquals("git", first.vcs)
+        assertEquals(1790240544314L, first.timeCreated)
+        assertEquals(1790240696781L, first.timeUpdated)
+        assertTrue(projects[1].worktree == null)
+    }
+
+    @Test
     fun `session status round trips as dynamic map`() = runBlocking {
         enqueueJson(200, SAMPLE_STATUS)
         val status = client.sessionStatus()
@@ -110,7 +138,8 @@ class OpenCodeClientTest {
         assertEquals("POST", recorded.method)
         assertTrue(recorded.path!!.endsWith("/session/ses_abc/prompt_async"))
         val body = recorded.body.readUtf8()
-        val text = JarvisJson.parseToJsonElement(body).jsonObject["text"]!!.jsonPrimitive.content
+        val parts = JarvisJson.parseToJsonElement(body).jsonObject["parts"]!!.jsonArray
+        val text = parts[0].jsonObject["text"]!!.jsonPrimitive.content
         assertEquals("deploy the build", text)
     }
 
@@ -176,6 +205,23 @@ class OpenCodeClientTest {
         """.trimIndent()
 
         private val SAMPLE_STATUS = """{"ses_abc":{"status":"idle","time":123},"ses_xyz":{}}"""
+
+        private val SAMPLE_PROJECTS = """
+            [
+              {
+                "id": "proj_1",
+                "worktree": "D:\\AI Projects\\Jarvis",
+                "vcs": "git",
+                "time": {"created": 1790240544314, "updated": 1790240696781},
+                "sandboxes": []
+              },
+              {
+                "id": "proj_2",
+                "worktree": null,
+                "vcs": null
+              }
+            ]
+        """.trimIndent()
 
         private val SAMPLE_MESSAGES = """
             [

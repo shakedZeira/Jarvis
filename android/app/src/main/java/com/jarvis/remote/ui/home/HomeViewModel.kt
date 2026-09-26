@@ -4,9 +4,13 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jarvis.remote.data.model.OpenCodeEvent
+import com.jarvis.remote.data.model.Project
 import com.jarvis.remote.data.model.Session
 import com.jarvis.remote.data.model.SessionStatus
 import com.jarvis.remote.data.repo.OpenCodeClient
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +30,10 @@ data class HomeUiState(
     val connected: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null,
+    val projects: List<Project> = emptyList(),
+    val selectedProject: String? = null,
+    val showActiveOnly: Boolean = false,
+    val activeCount: Int = 0,
 )
 
 data class SessionRow(
@@ -40,9 +48,27 @@ data class SessionRow(
 
 enum class RowStatus { RUNNING, IDLE, ERROR, UNKNOWN }
 
+fun Project.displayName(): String {
+    val path = worktree?.trim()?.trimEnd('/', '\\')
+    if (!path.isNullOrEmpty()) {
+        val last = path.substringAfterLast('/').substringAfterLast('\\')
+        if (last.isNotBlank()) return last
+        return path
+    }
+    return id
+}
+
 object HomeRowMapper {
 
     const val IDLE_TIMEOUT_MILLIS: Long = 5 * 60 * 1000L
+    const val ACTIVE_WINDOW_MILLIS: Long = 30 * 60 * 1000L
+
+    fun activeRows(rows: List<SessionRow>, now: Long): List<SessionRow> =
+        rows.filter { row ->
+            row.busy ||
+                row.status == RowStatus.RUNNING ||
+                (row.lastActivityMillis != null && now - row.lastActivityMillis <= ACTIVE_WINDOW_MILLIS)
+        }
 
     fun toRows(
         sessions: List<Session>,
@@ -115,8 +141,19 @@ class HomeViewModel(
     private val errors = mutableMapOf<String, String>()
     private val refetchRequests = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 16)
 
+    private val projects = mutableListOf<Project>()
+
     @Volatile
     private var latestSessions: List<Session> = emptyList()
+
+    @Volatile
+    private var latestStatuses: Map<String, SessionStatus> = emptyMap()
+
+    @Volatile
+    private var selectedProjectDir: String? = null
+
+    @Volatile
+    private var activeOnly: Boolean = false
 
     init {
         observeStatus()
@@ -127,23 +164,12 @@ class HomeViewModel(
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(loading = true, error = null) }
-            runCatching { client.sessions() to client.sessionStatus() }
+            loadProjects()
+            runCatching { fetchAllSessions() to client.sessionStatus() }
                 .onSuccess { (sessions, statuses) ->
                     latestSessions = sessions
-                    _uiState.update {
-                        it.copy(
-                            sessions = HomeRowMapper.toRows(
-                                sessions = sessions,
-                                statuses = statuses,
-                                busyIds = busyIds.toSet(),
-                                now = System.currentTimeMillis(),
-                                errors = errors.toMap(),
-                            ),
-                            connected = true,
-                            loading = false,
-                            error = null,
-                        )
-                    }
+                    renderRows(statuses)
+                    _uiState.update { it.copy(loading = false, error = null) }
                 }
                 .onFailure { cause ->
                     _uiState.update {
@@ -155,21 +181,69 @@ class HomeViewModel(
 
     fun retry() = refresh()
 
+    fun selectProject(directory: String?) {
+        selectedProjectDir = directory
+        _uiState.update { it.copy(selectedProject = directory) }
+        if (latestSessions.isEmpty()) {
+            refresh()
+        } else {
+            renderRows(latestStatuses)
+        }
+    }
+
+    fun selectMode(activeOnly: Boolean) {
+        this.activeOnly = activeOnly
+        _uiState.update { it.copy(showActiveOnly = activeOnly) }
+        if (latestSessions.isEmpty()) {
+            refresh()
+        } else {
+            renderRows(latestStatuses)
+        }
+    }
+
+    private suspend fun loadProjects() {
+        runCatching { client.projects() }
+            .onSuccess { fetched ->
+                projects.clear()
+                projects.addAll(fetched)
+                _uiState.update {
+                    it.copy(projects = fetched.filter { project -> !project.worktree.isNullOrBlank() })
+                }
+            }
+    }
+
+    private suspend fun fetchAllSessions(): List<Session> {
+        val directories = projects
+            .asSequence()
+            .mapNotNull { it.worktree }
+            .map { it.trim().trimEnd('/', '\\') }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
+        if (directories.isEmpty()) return client.sessions()
+        return coroutineScope {
+            val results = directories.map { directory ->
+                async { runCatching { client.sessions(directory = directory, limit = 500) } }
+            }.awaitAll()
+            val successes = results.mapNotNull { it.getOrNull() }
+            val failures = results.mapNotNull { it.exceptionOrNull() }
+            if (successes.isEmpty() && failures.isNotEmpty()) throw failures.first()
+            if (successes.isEmpty()) return@coroutineScope emptyList()
+            successes.flatMap { it }.distinctBy { it.id }
+        }
+    }
+
     private fun observeStatus() {
         viewModelScope.launch {
             statusFlow
                 .onEach { statuses ->
+                    latestStatuses = statuses
+                    val rendered = renderedRows(statuses, System.currentTimeMillis())
                     _uiState.update { state ->
                         state.copy(
                             connected = true,
-                            sessions = if (latestSessions.isEmpty()) state.sessions else
-                                HomeRowMapper.toRows(
-                                    sessions = latestSessions,
-                                    statuses = statuses,
-                                    busyIds = busyIds.toSet(),
-                                    now = System.currentTimeMillis(),
-                                    errors = errors.toMap(),
-                                ),
+                            sessions = if (latestSessions.isEmpty()) state.sessions else rendered.visible,
+                            activeCount = rendered.activeCount,
                         )
                     }
                 }
@@ -263,20 +337,49 @@ class HomeViewModel(
     }
 
     private suspend fun refreshRows() {
-        val rows = runCatching {
-            val sessions = client.sessions()
+        runCatching {
+            val sessions = fetchAllSessions()
             latestSessions = sessions
             val statuses = client.sessionStatus()
-            HomeRowMapper.toRows(
-                sessions = sessions,
-                statuses = statuses,
-                busyIds = busyIds.toSet(),
-                now = System.currentTimeMillis(),
-                errors = errors.toMap(),
-            )
+            renderRows(statuses)
         }.getOrNull() ?: return
-        _uiState.update {
-            it.copy(connected = true, sessions = rows)
+        _uiState.update { it.copy(connected = true) }
+    }
+
+    private fun renderRows(statuses: Map<String, SessionStatus>) {
+        latestStatuses = statuses
+        val rendered = renderedRows(statuses, System.currentTimeMillis())
+        _uiState.update { state ->
+            state.copy(
+                connected = true,
+                sessions = rendered.visible,
+                activeCount = rendered.activeCount,
+            )
         }
+    }
+
+    private data class RenderedRows(val visible: List<SessionRow>, val activeCount: Int)
+
+    private fun renderedRows(statuses: Map<String, SessionStatus>, now: Long): RenderedRows {
+        val allRows = HomeRowMapper.toRows(
+            sessions = latestSessions,
+            statuses = statuses,
+            busyIds = busyIds.toSet(),
+            now = now,
+            errors = errors.toMap(),
+        )
+        val active = HomeRowMapper.activeRows(allRows, now)
+        val visible = if (activeOnly) active else filterRowsByProject(allRows)
+        return RenderedRows(visible, active.size)
+    }
+
+    private fun filterRowsByProject(rows: List<SessionRow>): List<SessionRow> {
+        val target = selectedProjectDir?.normalizedPath() ?: return rows
+        return rows.filter { it.directory.normalizedPath() == target }
+    }
+
+    private fun String?.normalizedPath(): String? {
+        if (this == null) return null
+        return trim().replace('\\', '/').trimEnd('/')
     }
 }

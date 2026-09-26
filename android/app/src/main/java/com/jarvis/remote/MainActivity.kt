@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -31,6 +32,7 @@ import com.jarvis.remote.ui.theme.JarvisTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContent {
             JarvisTheme {
                 AppNav()
@@ -48,9 +50,14 @@ private fun AppNav(modifier: Modifier = Modifier) {
         container.credentialStore.loadDefault()?.takeIf { it.baseUrl.isNotBlank() }
     }
 
-    LaunchedEffect(savedProfile) {
+    remember(savedProfile) {
         if (savedProfile != null) {
             container.connect(savedProfile)
+        }
+    }
+
+    LaunchedEffect(savedProfile) {
+        if (savedProfile != null) {
             RemoteForegroundService.start(context, savedProfile)
         }
     }
