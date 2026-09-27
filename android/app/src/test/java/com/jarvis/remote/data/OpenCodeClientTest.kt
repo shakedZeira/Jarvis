@@ -13,6 +13,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -153,14 +154,97 @@ class OpenCodeClientTest {
     }
 
     @Test
-    fun `respondPermission posts boolean value`() = runBlocking {
-        enqueueJson(200, "{}")
-        client.respondPermission("ses_abc", "perm_1", allowed = true)
+    fun `pendingPermissions parses per_ array into models`() = runBlocking {
+        enqueueJson(200, SAMPLE_PERMISSIONS)
+        val permissions = client.pendingPermissions()
+        assertEquals(2, permissions.size)
+        val first = permissions.first()
+        assertEquals("per_1", first.id)
+        assertEquals("ses_abc", first.sessionID)
+        assertEquals("bash", first.permission)
+        assertEquals(listOf("git status*"), first.patterns)
+        assertEquals(listOf("per_prev"), first.always)
+        val second = permissions[1]
+        assertEquals("per_2", second.id)
+        assertEquals("edit", second.permission)
+        assertEquals(0, second.patterns.size)
+        assertEquals(0, second.always.size)
+
+        val recorded = server.takeRequest()
+        assertEquals("GET", recorded.method)
+        assertEquals("/permission", recorded.path)
+    }
+
+    @Test
+    fun `pendingQuestions parses que_ request with question info`() = runBlocking {
+        enqueueJson(200, SAMPLE_QUESTIONS)
+        val requests = client.pendingQuestions()
+        assertEquals(1, requests.size)
+        val request = requests.first()
+        assertEquals("que_1", request.id)
+        assertEquals("ses_abc", request.sessionID)
+        assertEquals(1, request.questions.size)
+        val info = request.questions.first()
+        assertEquals("Continue?", info.question)
+        assertEquals("Confirm", info.header)
+        assertEquals(2, info.options.size)
+        assertEquals("Yes", info.options[0].label)
+        assertEquals("Apply the change", info.options[0].description)
+        assertEquals("No", info.options[1].label)
+        assertEquals("", info.options[1].description)
+        assertTrue(info.multiple)
+        assertTrue(info.custom)
+
+        val recorded = server.takeRequest()
+        assertEquals("GET", recorded.method)
+        assertEquals("/question", recorded.path)
+    }
+
+    @Test
+    fun `replyPermission posts reply and message`() = runBlocking {
+        enqueueJson(200, "true")
+        client.replyPermission("per_1", "always", "ok")
         val recorded = server.takeRequest()
         assertEquals("POST", recorded.method)
-        assertTrue(recorded.path!!.contains("/session/ses_abc/permissions/perm_1"))
-        val value = JarvisJson.parseToJsonElement(recorded.body.readUtf8()).jsonObject["value"]!!.jsonPrimitive.content
-        assertEquals("true", value)
+        assertEquals("/permission/per_1/reply", recorded.path)
+        val body = JarvisJson.parseToJsonElement(recorded.body.readUtf8()).jsonObject
+        assertEquals("always", body["reply"]!!.jsonPrimitive.content)
+        assertEquals("ok", body["message"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `replyPermission omits message when null`() = runBlocking {
+        enqueueJson(200, "true")
+        client.replyPermission("per_2", "once")
+        val recorded = server.takeRequest()
+        assertEquals("/permission/per_2/reply", recorded.path)
+        val body = JarvisJson.parseToJsonElement(recorded.body.readUtf8()).jsonObject
+        assertEquals("once", body["reply"]!!.jsonPrimitive.content)
+        assertNull(body["message"])
+    }
+
+    @Test
+    fun `replyQuestion posts nested answers array`() = runBlocking {
+        enqueueJson(200, "{}")
+        client.replyQuestion("que_1", listOf(listOf("Yes"), listOf("A", "B")))
+        val recorded = server.takeRequest()
+        assertEquals("POST", recorded.method)
+        assertEquals("/question/que_1/reply", recorded.path)
+        val answers = JarvisJson.parseToJsonElement(recorded.body.readUtf8())
+            .jsonObject["answers"]!!.jsonArray
+        assertEquals(2, answers.size)
+        assertEquals(listOf("Yes"), answers[0].jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(listOf("A", "B"), answers[1].jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `rejectQuestion posts empty json object to reject endpoint`() = runBlocking {
+        enqueueJson(200, "{}")
+        client.rejectQuestion("que_1")
+        val recorded = server.takeRequest()
+        assertEquals("POST", recorded.method)
+        assertEquals("/question/que_1/reject", recorded.path)
+        assertEquals("{}", recorded.body.readUtf8())
     }
 
     @Test
@@ -271,6 +355,51 @@ class OpenCodeClientTest {
                     "messageID": "msg_x"
                   }
                 ]
+              }
+            ]
+        """.trimIndent()
+
+        private val SAMPLE_PERMISSIONS = """
+            [
+              {
+                "id": "per_1",
+                "sessionID": "ses_abc",
+                "permission": "bash",
+                "patterns": ["git status*"],
+                "metadata": {},
+                "always": ["per_prev"],
+                "tool": {"messageID": "msg_1", "callID": "call_1"}
+              },
+              {
+                "id": "per_2",
+                "sessionID": "ses_abc",
+                "permission": "edit",
+                "patterns": [],
+                "metadata": {},
+                "always": [],
+                "tool": {"messageID": "msg_2", "callID": "call_2"}
+              }
+            ]
+        """.trimIndent()
+
+        private val SAMPLE_QUESTIONS = """
+            [
+              {
+                "id": "que_1",
+                "sessionID": "ses_abc",
+                "questions": [
+                  {
+                    "question": "Continue?",
+                    "header": "Confirm",
+                    "options": [
+                      {"label": "Yes", "description": "Apply the change"},
+                      {"label": "No", "description": ""}
+                    ],
+                    "multiple": true,
+                    "custom": true
+                  }
+                ],
+                "tool": {"messageID": "msg_1", "callID": "call_1"}
               }
             ]
         """.trimIndent()

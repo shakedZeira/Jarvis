@@ -15,6 +15,7 @@ okhttp = "4.12.0"
 kotlinxSerialization = "1.6.3"
 zxing = "3.5.3"
 securityCrypto = "1.0.0"
+appcompat = "1.7.0"
 
 [libraries]
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
@@ -41,6 +42,7 @@ security-crypto = { module = "androidx.security:security-crypto", version.ref = 
 junit4 = { module = "junit:junit", version.ref = "junit" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
+androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

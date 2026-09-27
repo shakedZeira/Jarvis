@@ -37,5 +37,11 @@ object EventNotifier {
         }
     }
 
+    fun handleSessionIdle(sessionId: String?, coordinator: VoiceNotificationCoordinator?) {
+        if (sessionId != null && coordinator != null) {
+            coordinator.onSessionIdle(sessionId)
+        }
+    }
+
     private fun String?.asSessionLabel(): String = this?.takeIf { it.isNotBlank() } ?: "session"
 }

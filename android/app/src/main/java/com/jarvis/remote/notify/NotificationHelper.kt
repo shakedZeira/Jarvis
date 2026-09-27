@@ -81,6 +81,48 @@ object NotificationHelper {
         NotificationManagerCompat.from(context).notify(id, notification)
     }
 
+    fun notifyWithVoiceReply(
+        context: Context,
+        channel: String,
+        id: Int,
+        title: String,
+        message: String,
+        sessionId: String
+    ) {
+        val replyIntent = Intent(context, VoiceInteractionActivity::class.java).apply {
+            putExtra(VoiceInteractionActivity.EXTRA_SESSION_ID, sessionId)
+            putExtra(VoiceInteractionActivity.EXTRA_INITIAL_PROMPT, "What would you like me to do next?")
+            action = VoiceNotificationCoordinator.ACTION_REPLY_VOICE
+        }
+
+        val replyPendingIntent = PendingIntent.getActivity(
+            context,
+            sessionId.hashCode(),
+            replyIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(context, channel)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent(context))
+            .addAction(
+                NotificationCompat.Action.Builder(
+                    R.drawable.ic_mic_placeholder,
+                    "Reply by Voice",
+                    replyPendingIntent
+                ).build()
+            )
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(id, notification)
+    }
+
     fun foregroundNotification(context: Context, status: String = "Connected"): Notification =
         NotificationCompat.Builder(context, CHANNEL_FOREGROUND)
             .setSmallIcon(R.mipmap.ic_launcher)

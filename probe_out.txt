@@ -1,0 +1,8 @@
+At D:\AI Projects\Jarvis\pc\probe.ps1:17 char:34
++                 Write-Host "RESP $code:"
++                                  ~~~~~~
+Variable reference is not valid. ':' was not followed by a valid variable name character. Consider using ${} to 
+delimit the name.
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : InvalidVariableReferenceWithDrive
+ 

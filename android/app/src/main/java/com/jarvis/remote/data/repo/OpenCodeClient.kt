@@ -3,7 +3,9 @@ package com.jarvis.remote.data.repo
 import com.jarvis.remote.data.model.Health
 import com.jarvis.remote.data.model.JarvisJson
 import com.jarvis.remote.data.model.Message
+import com.jarvis.remote.data.model.PermissionRequest
 import com.jarvis.remote.data.model.Project
+import com.jarvis.remote.data.model.QuestionRequest
 import com.jarvis.remote.data.model.Session
 import com.jarvis.remote.data.model.SessionStatus
 import java.net.URLEncoder
@@ -93,15 +95,47 @@ class OpenCodeClient(
         execute(request)
     }
 
-    suspend fun respondPermission(sessionID: String, permissionID: String, allowed: Boolean): Unit =
+    suspend fun pendingPermissions(): List<PermissionRequest> = getJson("/permission")
+
+    suspend fun pendingQuestions(): List<QuestionRequest> = getJson("/question")
+
+    suspend fun replyPermission(requestID: String, reply: String, message: String? = null): Unit =
         withContext(Dispatchers.IO) {
-            val body = buildJsonObject { put("value", allowed) }.toString()
+            val body = buildJsonObject {
+                put("reply", reply)
+                if (message != null) put("message", message)
+            }.toString()
             val request = Request.Builder()
-                .url("$base/session/$sessionID/permissions/$permissionID")
+                .url("$base/permission/$requestID/reply")
                 .post(body.toRequestBody(JSON_MEDIA))
                 .build()
             execute(request)
         }
+
+    suspend fun replyQuestion(requestID: String, answers: List<List<String>>): Unit =
+        withContext(Dispatchers.IO) {
+            val body = buildJsonObject {
+                put("answers", buildJsonArray {
+                    answers.forEach { selection ->
+                        add(buildJsonArray { selection.forEach { add(it) } })
+                    }
+                })
+            }.toString()
+            val request = Request.Builder()
+                .url("$base/question/$requestID/reply")
+                .post(body.toRequestBody(JSON_MEDIA))
+                .build()
+            execute(request)
+        }
+
+    suspend fun rejectQuestion(requestID: String): Unit = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {}.toString()
+        val request = Request.Builder()
+            .url("$base/question/$requestID/reject")
+            .post(body.toRequestBody(JSON_MEDIA))
+            .build()
+        execute(request)
+    }
 
     private suspend inline fun <reified T> getJson(path: String, query: String? = null): T =
         withContext(Dispatchers.IO) {

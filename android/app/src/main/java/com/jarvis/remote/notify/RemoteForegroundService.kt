@@ -10,8 +10,10 @@ import android.util.Base64
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.jarvis.remote.JarvisApplication
 import com.jarvis.remote.data.ConnectionProfile
 import com.jarvis.remote.data.CredentialStore
+import com.jarvis.remote.data.model.OpenCodeEvent
 import com.jarvis.remote.data.sse.EventStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +24,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
+import java.nio.charset.StandardCharsets
 
 class RemoteForegroundService : Service() {
 
@@ -32,6 +35,7 @@ class RemoteForegroundService : Service() {
     private var connectedJob: Job? = null
     private var connectivityMonitor: ConnectivityMonitor? = null
     private var profile: ConnectionProfile? = null
+    private var voiceNotificationCoordinator: VoiceNotificationCoordinator? = null
     @Volatile private var connected = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -39,6 +43,10 @@ class RemoteForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         NotificationHelper.ensureChannels(this)
+
+        // Initialize VoiceNotificationCoordinator from AppContainer
+        val app = applicationContext as JarvisApplication
+        voiceNotificationCoordinator = app.container.voiceNotificationCoordinator
 
         val loadedProfile = CredentialStore(this).loadDefault()
         if (loadedProfile == null) {
@@ -72,6 +80,7 @@ class RemoteForegroundService : Service() {
         connectedJob?.cancel()
         streamJob = null
         connectedJob = null
+        voiceNotificationCoordinator?.let { it.ttsEngine.shutdown() }
         scope.cancel()
         eventStream = null
         super.onDestroy()
@@ -89,7 +98,7 @@ class RemoteForegroundService : Service() {
         val okHttp = OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val token = Base64.encodeToString(
-                    "${target.username}:${target.password}".toByteArray(Charsets.UTF_8),
+                    "${target.username}:${target.password}".toByteArray(StandardCharsets.UTF_8),
                     Base64.NO_WRAP
                 )
                 val request = chain.request().newBuilder()
@@ -117,6 +126,11 @@ class RemoteForegroundService : Service() {
                     alert.title,
                     alert.message
                 )
+                
+                // Handle SessionIdle event with voice notification
+                if (event is OpenCodeEvent.SessionIdle) {
+                    EventNotifier.handleSessionIdle(event.sessionID, voiceNotificationCoordinator)
+                }
             }
         }
 

@@ -5,8 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jarvis.remote.data.model.Message
 import com.jarvis.remote.data.model.OpenCodeEvent
+import com.jarvis.remote.data.model.PermissionRequest
+import com.jarvis.remote.data.model.QuestionRequest
 import com.jarvis.remote.data.repo.ApiException
 import com.jarvis.remote.data.repo.OpenCodeClient
+import com.jarvis.remote.notify.VoiceNotificationCoordinator
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -17,6 +20,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 data class SessionUiState(
@@ -29,12 +33,16 @@ data class SessionUiState(
     val error: String? = null,
     val sending: Boolean = false,
     val disconnected: Boolean = false,
+    val permission: PermissionRequest? = null,
+    val question: QuestionRequest? = null,
+    val responding: Boolean = false,
 )
 
 class SessionViewModel(
     private val client: OpenCodeClient,
     private val events: Flow<OpenCodeEvent>,
     private val sessionID: String,
+    private val voiceNotificationCoordinator: VoiceNotificationCoordinator,
     app: Application,
 ) : AndroidViewModel(app) {
 
@@ -45,6 +53,8 @@ class SessionViewModel(
         private const val SEND_POLL_INTERVAL_MS = 1_500L
         private const val SEND_TIMEOUT_MS = 120_000L
         private const val STREAM_CAP = 50_000
+        private const val PERMISSION_POLL_INTERVAL_MS = 2_000L
+        private const val PERMISSION_POLL_MIN_GAP_MS = 500L
     }
 
     private val _uiState = MutableStateFlow(SessionUiState(sessionID = sessionID))
@@ -52,10 +62,14 @@ class SessionViewModel(
 
     private var eventsJob: Job? = null
     private var reloadJob: Job? = null
+    private var pollJob: Job? = null
     private var streamingMessageId: String? = null
     private var optimisticCounter = 0
     private var sendGeneration = 0
     private var pendingUserText: String? = null
+    private var lastPollAt = 0L
+    private val repliedPermissions = mutableSetOf<String>()
+    private val repliedQuestions = mutableSetOf<String>()
 
     @Volatile
     var isBackgrounded = false
@@ -68,6 +82,7 @@ class SessionViewModel(
                 .catch { _uiState.update { it.copy(disconnected = true) } }
                 .collect()
         }
+        startPoll()
         load(initial = true)
     }
 
@@ -115,10 +130,15 @@ class SessionViewModel(
                 sending = if (completed) false else state.sending,
                 busy = if (completed) false else state.busy,
             ).also {
-                if (completed) pendingUserText = null
+                if (completed) {
+                    pendingUserText = null
+                    // Trigger voice notification when session completes
+                    voiceNotificationCoordinator.onSessionIdle(sessionID)
+                }
             }
         }
         streamingMessageId = if (tailText != null) lastAssistant?.info?.id else null
+        triggerPoll()
     }
 
     private fun hasCompletedAssistantAfter(messages: List<Message>, userText: String): Boolean {
@@ -213,9 +233,113 @@ class SessionViewModel(
         isBackgrounded = value
     }
 
+    fun respondPermission(reply: String) {
+        val request = _uiState.value.permission ?: return
+        if (_uiState.value.responding) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(responding = true) }
+            runCatching { client.replyPermission(request.id, reply) }
+                .onSuccess {
+                    repliedPermissions += request.id
+                    _uiState.update {
+                        it.copy(permission = null, responding = false, busy = false, error = null)
+                    }
+                    triggerPoll()
+                    scheduleReload()
+                }
+                .onFailure { cause ->
+                    _uiState.update {
+                        it.copy(
+                            responding = false,
+                            error = cause.message ?: "Couldn't send the permission reply",
+                        )
+                    }
+                }
+        }
+    }
+
+    fun submitQuestion(answers: List<List<String>>) {
+        val request = _uiState.value.question ?: return
+        if (_uiState.value.responding) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(responding = true) }
+            runCatching { client.replyQuestion(request.id, answers) }
+                .onSuccess {
+                    repliedQuestions += request.id
+                    _uiState.update {
+                        it.copy(question = null, responding = false, busy = false, error = null)
+                    }
+                    triggerPoll()
+                    scheduleReload()
+                }
+                .onFailure { cause -> failRespond(cause, "Couldn't send the answers") }
+        }
+    }
+
+    fun rejectQuestion() {
+        val request = _uiState.value.question ?: return
+        if (_uiState.value.responding) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(responding = true) }
+            runCatching { client.rejectQuestion(request.id) }
+                .onSuccess {
+                    repliedQuestions += request.id
+                    _uiState.update {
+                        it.copy(question = null, responding = false, busy = false, error = null)
+                    }
+                    triggerPoll()
+                    scheduleReload()
+                }
+                .onFailure { cause -> failRespond(cause, "Couldn't reject the questions") }
+        }
+    }
+
+    private fun failRespond(cause: Throwable, fallback: String) {
+        _uiState.update { it.copy(responding = false, error = cause.message ?: fallback) }
+    }
+
+    private fun startPoll() {
+        pollJob?.cancel()
+        pollJob = viewModelScope.launch {
+            while (isActive) {
+                lastPollAt = System.currentTimeMillis()
+                runCatching { pollPending() }
+                delay(PERMISSION_POLL_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun triggerPoll() {
+        if (pollJob?.isActive != true) {
+            startPoll()
+            return
+        }
+        if (System.currentTimeMillis() - lastPollAt < PERMISSION_POLL_MIN_GAP_MS) return
+        startPoll()
+    }
+
+    private suspend fun pollPending() {
+        runCatching { client.pendingPermissions() }
+            .onSuccess { requests ->
+                repliedPermissions.retainAll(requests.map { it.id }.toSet())
+                val match = PendingPrompts.permissions(requests, sessionID)
+                    .firstOrNull { it.id !in repliedPermissions }
+                _uiState.update { it.copy(permission = match) }
+            }
+        runCatching { client.pendingQuestions() }
+            .onSuccess { requests ->
+                repliedQuestions.retainAll(requests.map { it.id }.toSet())
+                val match = PendingPrompts.questions(requests, sessionID)
+                    .firstOrNull { it.id !in repliedQuestions }
+                _uiState.update { it.copy(question = match) }
+            }
+    }
+
     fun dispose() {
         eventsJob?.cancel()
         eventsJob = null
+        pollJob?.cancel()
+        pollJob = null
     }
 
     override fun onCleared() {
@@ -244,9 +368,13 @@ class SessionViewModel(
             is OpenCodeEvent.SessionStatusChanged ->
                 if (event.sessionID == sessionID && !isBackgrounded) {
                     when (event.status) {
-                        "busy", "retry", "working", "running" -> _uiState.update { it.copy(busy = true) }
+                        "busy", "retry", "working", "running" -> {
+                            _uiState.update { it.copy(busy = true) }
+                            triggerPoll()
+                        }
                         "idle" -> {
                             _uiState.update { it.copy(busy = false, sending = false) }
+                            triggerPoll()
                             scheduleReload()
                         }
                         else -> Unit
@@ -265,7 +393,10 @@ class SessionViewModel(
                 }
 
             is OpenCodeEvent.PermissionUpdated ->
-                if (event.sessionID == sessionID && !isBackgrounded) _uiState.update { it.copy(busy = true) }
+                if (event.sessionID == sessionID && !isBackgrounded) {
+                    _uiState.update { it.copy(busy = true) }
+                    triggerPoll()
+                }
 
             is OpenCodeEvent.ServerConnected -> _uiState.update { it.copy(disconnected = false) }
 

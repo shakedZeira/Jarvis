@@ -121,6 +121,24 @@ fun SessionScreen(sessionID: String, onBack: () -> Unit) {
             }
         }
     }
+
+    val permission = state.permission
+    if (permission != null) {
+        PermissionRequestDialog(
+            request = permission,
+            responding = state.responding,
+            onReply = viewModel::respondPermission,
+        )
+    } else {
+        state.question?.let { question ->
+            QuestionRequestDialog(
+                request = question,
+                responding = state.responding,
+                onSubmit = viewModel::submitQuestion,
+                onReject = viewModel::rejectQuestion,
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -223,6 +241,7 @@ private fun provideSessionViewModel(app: Application, sessionID: String): Sessio
         client = container.opencodeClient,
         events = container.events,
         sessionID = sessionID,
+        voiceNotificationCoordinator = container.voiceNotificationCoordinator,
         app = app,
     )
 }
